@@ -144,7 +144,7 @@ export function scanZstdFrames(buffer) {
  * @param {string} [label]
  * @param {string} [home]
  */
-export async function validateSessionArtifact(buffer, label = 'session artifact', home) {
+export async function validateSessionArtifact(buffer, label = 'session artifact', home, options = {}) {
   const catalog = await loadCatalog(home);
   let frames;
   try {
@@ -169,7 +169,10 @@ export async function validateSessionArtifact(buffer, label = 'session artifact'
   if (rows.length === 0) throw new Error(`${label}: artifact carries no events`);
 
   try {
-    const restore = catalog.createRestore(headerRecord, { recovery: 'strict', validation: 'current' });
+    const restore = catalog.createRestore(headerRecord, {
+      recovery: options.recovery ?? 'strict',
+      validation: options.validation ?? 'current',
+    });
     for (const row of rows) restore.decodeRow(row);
     const current = restore.finish();
     return {
