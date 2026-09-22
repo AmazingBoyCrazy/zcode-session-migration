@@ -105,6 +105,36 @@ compaction/end      { compactionId, turn: null }
 
 这些事件的精确形状与不变量见 [references/session-format.md](references/session-format.md#压缩事件)。
 
+### 两种压缩方式
+
+| 脚本 | 结果 | 何时用 |
+|---|---|---|
+| `compact.mjs` | 写入**新会话**（标题带 `· 压缩续接`），原始会话原样保留 | 想同时留着全量历史 |
+| `compact-inplace.mjs` | **原地改写原会话**，id 与标题不变，无新会话、无需重建分组 | 默认推荐——用户会习惯性点开原来那个会话 |
+
+`compact-inplace.mjs` 只在日志**结尾正好位于两个 turn 之间**（最后一个事件是 `turn/end`）时才动手，
+否则报错拒绝：压缩括号不能跨轮次边界。每个被改写的会话都会留 `<file>.bak-<时间戳>`。
+
+### 校验口径差异（踩过的坑）
+
+`validation: 'current'` 会跑已安装格式的全部语义规则，其中一条要求**日志的第一个 surface 节点必须是
+`system/message`**。迁移日志的第一个 surface 是 `user/message`，所以**一旦 DSH 自己往该日志追加过
+`system/message`（任何一次真实对话都会），严格校验就会报
+`system/message requires a protected first surface head`**。
+
+生产读取用的是 `{recovery:'recoverable', validation:'transformed'}`，对已经是当前格式的日志**跳过这一档
+语义校验**，因此 DSH 一直读得好好的。改写已被 DSH 追加过的日志时，用 `transformed` 才是与生产一致的口径。
+
+### 迁移提示（重要）
+
+复用摘要时会在前面加一段说明，告诉模型这段历史来自另一个工具：
+
+> 工具名称、审批规则、权限范围都已改变，早先的工作目录可能不是当前工作区；把之前的记录当背景，
+> 动手前先用当前环境的工具核实路径与状态，不要沿用在旧会话里记录过的审批或权限。
+
+原因很实际：导入的记录里写着旧工具的 `Bash` / `Read` / `Write` 之类的调用和当时的权限。模型若当成现状，
+就会去调不存在的工具、或以为有其实没有的权限。用 `--note <text>` 自定义，`--no-note` 关掉。
+
 ## 标准流程
 
 ```powershell

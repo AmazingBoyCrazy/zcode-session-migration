@@ -43,6 +43,20 @@ const SURFACE_TYPES = new Set(['user/message', 'assistant/message', 'tool/result
 const CHECKPOINT_MARKER = { kind: 'plugin', plugin: 'compact' };
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 
+/**
+ * Prepended to the reused summary so the model knows the history changed hands.
+ * The imported transcript happened under another tool: its tool names, approval rules and
+ * permission scopes do not describe this environment, and a model that reads them as
+ * current will call tools that do not exist or assume access it does not have. Override
+ * with `--note <text>`, drop with `--no-note`.
+ */
+const DEFAULT_MIGRATION_NOTE =
+  'Note: this conversation history was migrated from another agent tool into DSH. ' +
+  'Tool names, approval rules and permission scopes have changed, and the earlier working ' +
+  'directory may not be the current workspace. Treat the earlier transcript as background ' +
+  'only: verify paths and state with the tools available here before acting, and do not ' +
+  'assume that an approval or permission recorded earlier still applies.';
+
 function parseArgs(argv) {
   const options = {};
   for (let i = 0; i < argv.length; i += 1) {
@@ -171,8 +185,11 @@ for (const entry of chosen) {
       continue;
     }
 
-    const summary = messageText(boundary.summaryMessageIds?.[0] ?? boundary.summaryMessageId).trim();
-    if (summary.length === 0) throw new Error('the source compaction has an empty summary message');
+    const rawSummary = messageText(boundary.summaryMessageIds?.[0] ?? boundary.summaryMessageId).trim();
+    if (rawSummary.length === 0) throw new Error('the source compaction has an empty summary message');
+    const note =
+      options['no-note'] === true ? '' : typeof options.note === 'string' ? options.note : DEFAULT_MIGRATION_NOTE;
+    const summary = note.length > 0 ? `${note}\n\n---\n\n${rawSummary}` : rawSummary;
 
     const { headerRow, events } = readArtifact(artifactPath);
     const before = events.length;

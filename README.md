@@ -79,17 +79,37 @@ This model's maximum context length is 1048576 tokens.
 However, you requested 2040304 tokens (1784304 in the messages, 256000 in the completion).
 ```
 
-`compact.mjs` 复用源工具**已经生成好的摘要**（不发起任何模型调用），在它自己的压缩边界插入一组
-DSH 原生压缩事件，生成一个**新会话**——原始会话原样保留、仍可阅读：
+`compact-inplace.mjs`（推荐）复用源工具**已经生成好的摘要**（不发起任何模型调用），在它自己的压缩边界
+插入一组 DSH 原生压缩事件，**原地改写原来的会话**——id 与标题都不变，没有新会话，也不需要重建分组。
+要求日志结尾正好位于两个 turn 之间，并且每个被改写的会话都会留 `<file>.bak-<时间戳>`：
 
 ```powershell
-node "$S\compact.mjs" --manifest zcode-migration-manifest.json --dry-run
-node "$S\compact.mjs" --manifest zcode-migration-manifest.json --allow-real   # DSH 停止时
-node "$S\register-workspaces.mjs"
+node "$S\compact-inplace.mjs" --manifest zcode-migration-manifest.json --dry-run
+# DSH 完全停止后：
+node "$S\compact-inplace.mjs" --manifest zcode-migration-manifest.json --allow-real `
+     --manifest-out "$env:TEMP\zcode-inplace.json"
 ```
 
-被遮蔽的事件留在日志里可追溯，模型 surface 变成「摘要 + 尾部」。实测一个 10,643 事件 /
-180 万 token 的会话，压缩后模型 surface 只剩 325 个节点，同一会话成功跑完一轮对话。
+`compact.mjs` 是另一种选择：写入一个**新会话**（标题带 `· 压缩续接`），原始会话原样保留，适合想同时留着
+全量历史的场景；代价是多一个会话，且需要再跑一次 `register-workspaces.mjs`。
+
+被遮蔽的事件留在日志里可追溯，模型 surface 变成「摘要 + 尾部」。实测一个 10,643 事件 / 180 万 token 的
+会话，压缩后模型 surface 只剩摘要，同一会话成功跑完一轮对话。
+
+## 迁移后继续对话：请先读这段
+
+导入的历史**全程发生在源工具里**。它记着的那些调用——`Bash` / `Read` / `Write` 之类——是那个工具的名字，
+写在那里的工作目录是那时的路径，记下的审批与权限也是那时的策略。**这些都不描述 DSH 当前环境。**
+
+所以在这类会话里继续干活时：
+
+- 工具名可能对不上：以前叫 `Bash` 的，在 DSH 里可能叫别的名字，或者根本不存在——先看当前可用工具
+- 权限与审批策略可能不同：历史里"用户同意了"不构成现在的授权，该问的还是要问
+- 工作目录可能变了：历史里的相对路径未必指向同一个地方，动手前用当前环境核实
+- 历史里的失败与报错可能只是那套权限的产物，不代表在 DSH 里也会失败（反之亦然）
+
+为此，压缩时会自动在摘要前面加一段说明（`--note <text>` 可自定义，`--no-note` 可关闭），让模型一进来
+就知道这段背景来自另一个工具。如果你手动续接一个**没有**经过压缩的迁移会话，建议在第一条消息里说明一句。
 
 ## 安全性
 
@@ -111,7 +131,8 @@ references/
   pitfalls.md                   已踩过的坑与根因
 scripts/
   migrate.mjs                   迁移入口
-  compact.mjs                   复用源工具摘要，生成带原生压缩事件的续接会话
+  compact-inplace.mjs           复用源工具摘要，原地压缩原会话（推荐）
+  compact.mjs                   复用源工具摘要，另生成一个续接会话
   sync.mjs                      增量再同步
   register-workspaces.mjs       重建工作区分组
   verify.mjs                    离线复核
