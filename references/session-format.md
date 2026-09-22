@@ -115,6 +115,50 @@ turn/end          {turn, reason:{kind:'completed'}}
 - 行 `ver` 必须等于该投影单元当前的 `stateVersion`（`title` 从单元的
   `titleProjectionDefinition.stateVersion` 取，不要照抄旧磁盘样本）。
 
+## 压缩事件
+
+DSH 用一组事件把旧的 surface 替换成摘要，同时把原事件留在日志里。四个事件构成一个事务：
+
+```json
+{"type":"compaction/start","seq":S,"time":T,"data":{"compactionId":"cmp_<uuid>","turn":null}}
+{"type":"compaction/summary","seq":S+1,"time":T,"data":{
+   "compactionId":"cmp_<uuid>","summary":"<摘要文本>",
+   "shadowedRange":{"start":<起始 seq>,"end":<结束 seq>},
+   "shadowedSeqs":[...],"shadowedTokenCount":123456,
+   "provider":"...","model":"..."}}
+{"type":"user/message","seq":S+2,"time":T,
+ "surfaceOp":{"op":"replace","startSeq":<起始 seq>,"endSeq":<结束 seq>},
+ "sourceEventSeqs":[S,S+1,...shadowedSeqs],
+ "data":{"content":[{"type":"text","text":"<摘要文本>"}],
+         "source":{"kind":"plugin","plugin":"compact","compactionId":"cmp_<uuid>"},
+         "role":"user","id":"compaction-checkpoint-cmp_<uuid>"}}
+{"type":"compaction/end","seq":S+3,"time":T,"data":{"compactionId":"cmp_<uuid>","turn":null}}
+```
+
+必须满足的约束（任一不满足，DSH 会拒绝整条日志）：
+
+| 约束 | 说明 |
+|---|---|
+| `turn` 归属 | `turn: null` 表示"轮次之间的独立压缩"；此时前面**不能有未闭合的 turn**。若给数字，必须等于当前打开的 turn。 |
+| 括号不能跨轮次 | `compaction/start` 打开后，`turn/start` / `turn/end` 都不能出现，直到 `compaction/end`。所以插入点必须在两个 turn 之间。 |
+| id 一致 | `summary` / `end` / 检查点的 `source.compactionId` 必须等于 `start` 的 `compactionId`。 |
+| 恰好一次 summary | 一个括号内只能有一个 `compaction/summary`；成功的 `compaction/end` 要求已有 summary。 |
+| `shadowedTokenCount` | 必须是非负安全整数。 |
+| **`shadowedSeqs` 必须精确** | 非空，且**恰好等于当前 surface 上 `[shadowedRange.start .. shadowedRange.end]` 这一段连续节点**（顺序也一致）。`seqs[0] === start`、`seqs.at(-1) === end` 也要成立。 |
+| 检查点来源 | 必须是 `{kind:'plugin', plugin:'compact', compactionId}`；只有这种来源的替换型 `user/message` 会被当作压缩检查点。 |
+| `time` 必填 | 所有事件都要有毫秒 `time`（这是个容易漏的字段）。 |
+
+**surface 的定义**：带 `surfaceOp` 的事件（`user/message`、`assistant/message`、`tool/result`、
+`system/message`）。纯追加的日志里，surface 就等于这些事件按 seq 排列。
+
+**遮蔽一个前缀时的算法**：找到保留尾部所在 turn 的 `turn/start` 下标 `i`；取
+`events[0..i-1]` 中所有 surface 事件的 seq 作为 `shadowedSeqs`；`shadowedRange` 取其首尾。
+插入点之后的每个事件 seq 都要整体后移，且它们自身的 `sourceEventSeqs` 引用必须同步重映射
+（插入点之前的事件 seq 不变，所以 `shadowedSeqs` 不需要重映射）。
+
+校验方式：`verify.mjs` 的严格回放会执行 `assertCurrentSurfaceSpan`，它检查的就是
+"`shadowedSeqs` 是否等于当前 surface 的精确切片"。
+
 ## 侧边栏如何挑选会话
 
 - `session.list`（Host 侧 `ApiSessionList`）**跳过 `header.cwd === undefined` 的会话**——cwd 必填。

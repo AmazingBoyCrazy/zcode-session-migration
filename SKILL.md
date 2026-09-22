@@ -63,6 +63,48 @@ fork 在 DSH 里作为**独立会话**导入（保留 `Fork of ...` 这类标题
 血缘：DSH 的 fork 语义是 seeded session（`isSeeded` + 继承事件切点），强行套用会触碰播种
 不变量。ZCode 侧的父子关系记录在 manifest 的 `zcodeParentId` 字段里备查。
 
+## 上下文过长（源工具已经压缩过的会话）
+
+**症状**：迁移完成、会话也能打开，但在里面发消息直接失败：
+
+```
+This model's maximum context length is 1048576 tokens.
+However, you requested 2040304 tokens (1784304 in the messages, 256000 in the completion).
+```
+
+**原因**：迁移复制的是源工具的**原始全量日志**，而源工具真正发给模型的是**压缩后的视图**。
+ZCode 自动压缩过的会话，模型实际只看到 1~2 万 token，原始日志却可能有 180 万。
+
+**不要指望 DSH 自己的压缩救场。** `dsh-compaction-basic` 摘要时会把**被遮蔽区域的消息
+原样回放**给摘要模型（为了复用提供方的热前缀），所以让它去压缩一个已经超限的会话，
+摘要请求自己也会超限。`/compact` 同样跑不动。
+
+**解法：复用源工具已经生成好的摘要**，用 `compact.mjs` 生成一个带 DSH 原生压缩事件的新会话：
+
+```powershell
+node "$S\compact.mjs" --manifest zcode-migration-manifest.json --dry-run
+# 停止 DSH 后写入
+node "$S\compact.mjs" --manifest zcode-migration-manifest.json --allow-real
+node "$S\register-workspaces.mjs"
+```
+
+产物是**新会话**（标题带 `· 压缩续接`），原始会话原样保留、仍可阅读：
+
+```
+[压缩前的全量历史 —— 保留在日志里]
+compaction/start    { compactionId, turn: null }
+compaction/summary  { summary, shadowedRange, shadowedSeqs, shadowedTokenCount, provider, model }
+user/message        检查点，surfaceOp: replace [startSeq..endSeq]
+compaction/end      { compactionId, turn: null }
+[压缩后的尾部 —— 原样]
+```
+
+被遮蔽的事件仍在日志中（可读、可追溯），但模型 surface 变成「摘要 + 尾部」——正是源工具
+当时真正在用的上下文。实测：一个 10,643 事件 / 180 万 token 的会话，压缩后模型 surface 只剩
+325 个节点 ≈ 2.4 万 token，同一会话成功跑完了一轮对话。
+
+这些事件的精确形状与不变量见 [references/session-format.md](references/session-format.md#压缩事件)。
+
 ## 标准流程
 
 ```powershell
@@ -147,6 +189,7 @@ node "$S\register-workspaces.mjs" --restore                      # 恢复注册�
 | 路径 | 作用 |
 |---|---|
 | `scripts/migrate.mjs` | 迁移入口（转换 + 校验 + 落盘 + manifest） |
+| `scripts/compact.mjs` | 复用源工具的摘要，生成带原生压缩事件的续接会话（解决上下文过长） |
 | `scripts/sync.mjs` | 增量再同步 = migrate + register-workspaces |
 | `scripts/register-workspaces.mjs` | 重建工作区注册表（分组），带备份与 `--restore` |
 | `scripts/verify.mjs` | 离线复核：重放 + 投影缓存 schema |

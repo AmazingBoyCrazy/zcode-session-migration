@@ -64,9 +64,32 @@ node "$S\sync.mjs" --allow-real     # = migrate + register-workspaces
 | 会话只在「未分组」里 | 分组由 `workspace.json` 决定；DSH 按 `cwd` 派生工作区**只在 `initialized === false` 时执行一次** |
 | 会话数量少了很多 | ZCode 的 `fork` 会话也带 `parent_id`，但它是用户可见的独立会话，按 `parent_id IS NULL` 过滤会把它们全丢掉 |
 | DSH 启动失败 `file is not valid JSON` | PowerShell 写 JSON 会加 UTF-8 BOM，`workspace` 域是 `single` 布局——一个坏字节就毁掉整个工作区列表 |
+| 导入后发消息报"上下文过长" | 迁移的是源工具的**原始全量日志**，而它实际发给模型的是**压缩后的视图**；DSH 自带的压缩也无法救场（它的摘要请求会原样回放被遮蔽区域），需要复用源工具已有的摘要 |
 
 完整说明见 [references/pitfalls.md](references/pitfalls.md) 与
 [references/session-format.md](references/session-format.md)。
+
+## 上下文过长怎么办
+
+源工具（ZCode）会自动压缩长会话，所以它真正发给模型的只有「摘要 + 一小段尾部」。迁移复制的是
+原始全量日志，于是 DSH 第一次请求就被提供方拒绝：
+
+```
+This model's maximum context length is 1048576 tokens.
+However, you requested 2040304 tokens (1784304 in the messages, 256000 in the completion).
+```
+
+`compact.mjs` 复用源工具**已经生成好的摘要**（不发起任何模型调用），在它自己的压缩边界插入一组
+DSH 原生压缩事件，生成一个**新会话**——原始会话原样保留、仍可阅读：
+
+```powershell
+node "$S\compact.mjs" --manifest zcode-migration-manifest.json --dry-run
+node "$S\compact.mjs" --manifest zcode-migration-manifest.json --allow-real   # DSH 停止时
+node "$S\register-workspaces.mjs"
+```
+
+被遮蔽的事件留在日志里可追溯，模型 surface 变成「摘要 + 尾部」。实测一个 10,643 事件 /
+180 万 token 的会话，压缩后模型 surface 只剩 325 个节点，同一会话成功跑完一轮对话。
 
 ## 安全性
 
@@ -88,6 +111,7 @@ references/
   pitfalls.md                   已踩过的坑与根因
 scripts/
   migrate.mjs                   迁移入口
+  compact.mjs                   复用源工具摘要，生成带原生压缩事件的续接会话
   sync.mjs                      增量再同步
   register-workspaces.mjs       重建工作区分组
   verify.mjs                    离线复核
