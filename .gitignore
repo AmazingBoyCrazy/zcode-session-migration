@@ -1,0 +1,20 @@
+# migration state and local artifacts
+zcode-migration-manifest.json
+zcode-migration-manifest.json.rolled-back
+*.rolled-back
+*.bak-*
+*.migrate-tmp-*
+
+# scratch rehearsals
+.iso/
+.iso2/
+
+# node
+node_modules/
+npm-debug.log*
+
+# editors / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
