@@ -71,6 +71,13 @@ if (home === defaultHome && options['allow-real'] !== true) {
 const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
 const only = typeof options.only === 'string' ? new Set(options.only.split(',').map((v) => v.trim())) : undefined;
 
+// Each run mints new session ids, so a re-run would duplicate every continuation.
+// Remember what has already been emitted and skip it unless --force is given.
+const outFile = path.resolve(options['manifest-out'] ?? 'zcode-compaction-manifest.json');
+const emitted = fs.existsSync(outFile) ? JSON.parse(fs.readFileSync(outFile, 'utf8')) : { version: 1, home, sessions: [] };
+emitted.sessions ??= [];
+const alreadyDone = new Set(emitted.sessions.map((entry) => entry.zcodeId));
+
 const db = openZcodeDatabase(dbFile);
 const queryOne = (sql, ...params) => db.prepare(sql).get(...params);
 
@@ -194,6 +201,10 @@ const chosen = manifest.sessions.filter((entry) => only === undefined || only.ha
 
 for (const entry of chosen) {
   try {
+    if (alreadyDone.has(entry.zcodeId) && options.force !== true) {
+      report.skipped.push({ zcodeId: entry.zcodeId, reason: 'already compacted in the output manifest' });
+      continue;
+    }
     const compaction = lastCompaction(entry.zcodeId);
     if (compaction === undefined) {
       report.skipped.push({ zcodeId: entry.zcodeId, reason: 'no compaction in ZCode' });
@@ -263,11 +274,26 @@ for (const entry of chosen) {
       artifactPath,
       cachePath: cacheDocument === null ? null : cachePath,
     });
+    emitted.sessions.push({
+      zcodeId: entry.zcodeId,
+      dshId,
+      title: validation.title,
+      cwd: finalArtifact.header.cwd,
+      artifactPath,
+      cachePath: cacheDocument === null ? null : cachePath,
+      shadowedNodes: shadowedSeqs.length,
+      shadowedTokens: meta.shadowedTokenCount,
+    });
   } catch (error) {
     report.failed.push({ zcodeId: entry.zcodeId, error: error.message });
   }
 }
 db.close();
+
+if (!dryRun && emitted.sessions.length > 0) {
+  emitted.updatedAt = new Date().toISOString();
+  fs.writeFileSync(outFile, `${JSON.stringify(emitted, null, 2)}\n`, 'utf8');
+}
 
 if (options.json === true) console.log(JSON.stringify(report, null, 2));
 else {
@@ -285,5 +311,6 @@ else {
   }
   for (const e of report.skipped) console.log(`  = skipped ${e.zcodeId}: ${e.reason}`);
   for (const e of report.failed) console.log(`  ! FAILED ${e.zcodeId}: ${e.error}`);
+  if (!dryRun && emitted.sessions.length > 0) console.log(`\noutput manifest: ${outFile}`);
 }
 process.exitCode = report.failed.length > 0 ? 1 : 0;
